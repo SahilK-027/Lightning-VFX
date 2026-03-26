@@ -1,0 +1,27 @@
+# ⚡ Lightning Effect Demo
+
+A stylized lightning strike VFX built with Three.js (Procedural bolt generation, ground cracks, sparks, and camera shake).
+
+## Quick Start
+
+```bash
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+
+# Build for production
+npm run build
+```
+
+## Tech Stack
+
+- Three.js - 3D rendering
+- lil-gui - Parameter controls
+- Vite - Build tool
+- Custom GLSL shaders for all effects
+
+## License
+
+MIT

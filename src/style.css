@@ -1,0 +1,303 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: #000;
+  overflow: hidden;
+}
+
+body {
+  background: #000;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  color: var(--unity-text, #c8c8c8);
+  -webkit-font-smoothing: antialiased;
+}
+
+:root {
+  --unity-bg: #1e1e1e;
+  --unity-panel: #282828;
+  --unity-panel-alt: #2f2f2f;
+  --unity-border: #3d3d3d;
+  --unity-border-hi: #505050;
+  --unity-text: #c8c8c8;
+  --unity-muted: #7a7a7a;
+  --unity-label: #9c9c9c;
+  --unity-accent: #4d94ff;
+  --unity-accent-lo: rgba(77, 148, 255, 0.12);
+  --unity-accent-md: rgba(77, 148, 255, 0.22);
+  --unity-header: #3a3a3a;
+  --unity-btn: #3c3c3c;
+  --unity-btn-hi: #505050;
+  --unity-btn-act: #4d94ff;
+  --unity-sep: #383838;
+  --r: 2px;
+}
+
+.webgl {
+  position: fixed;
+  top: 0;
+  left: 0;
+  outline: none;
+}
+
+canvas {
+  display: block;
+}
+
+/* ── Flash overlay ──────────────────────────────── */
+#flash-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+  background: rgba(120, 160, 255, 0);
+  transition: background 0.05s;
+}
+
+/* ── Stats – top-left, minimal ──────────────────── */
+#stats {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 10;
+  pointer-events: none;
+  background: #3a3a3a;
+  border: 1px solid var(--unity-border);
+  border-radius: var(--r);
+  padding: 7px 10px 7px 10px;
+  backdrop-filter: blur(10px);
+  min-width: 130px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 2.5px 0;
+}
+
+.stat-row + .stat-row {
+  margin-top: 2.5px;
+  padding-top: 4px;
+}
+
+.stat-label {
+  color: var(--unity-text);
+  text-transform: uppercase;
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+}
+
+.stat-value {
+  color: var(--unity-accent);
+  font-size: 10px;
+  font-weight: 500;
+  min-width: 24px;
+  text-align: right;
+}
+
+/* ── Control panel – bottom-right ───────────────── */
+#vfx-panel {
+  position: fixed;
+  top: 100px;
+  left: 14px;
+  z-index: 10;
+  width: 196px;
+  background: rgba(28, 28, 28, 0.9);
+  border: 1px solid var(--unity-border);
+  border-radius: var(--r);
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+  user-select: none;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--unity-header);
+  border-bottom: 1px solid var(--unity-border);
+  padding: 5px 8px 5px 7px;
+  cursor: default;
+}
+
+.panel-header-arrow {
+  color: var(--unity-muted);
+  font-size: 8px;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.panel-header-title {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: var(--unity-text);
+  flex: 1;
+}
+
+.panel-header-badge {
+  font-size: 7.5px;
+  color: var(--unity-accent);
+  border: 1px solid var(--unity-accent);
+  border-radius: 2px;
+  padding: 0 4px;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+}
+
+.panel-body {
+  padding: 7px 8px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 20px;
+}
+
+.field-label {
+  font-size: 8.5px;
+  color: var(--unity-label);
+  letter-spacing: 0.05em;
+  width: 72px;
+  flex-shrink: 0;
+}
+
+/* ── Buttons ─────────────────────────────────────── */
+.vfx-btn {
+  flex: 1;
+  height: 20px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  font-weight: 400;
+  text-transform: none;
+  border: 1px solid var(--unity-border);
+  background: var(--unity-btn);
+  color: var(--unity-text);
+  border-radius: var(--r);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.vfx-btn:hover {
+  background: var(--unity-btn-hi);
+  border-color: var(--unity-border-hi);
+  color: #fff;
+}
+
+.vfx-btn:active {
+  background: var(--unity-accent-md);
+  border-color: var(--unity-accent);
+  color: #fff;
+}
+
+.vfx-btn.accent {
+  background: rgba(50, 50, 50, 0.9);
+  border-color: #555;
+  color: var(--unity-text);
+}
+
+.vfx-btn.accent:hover {
+  background: var(--unity-accent-md);
+  border-color: var(--unity-accent);
+  color: #fff;
+}
+
+.vfx-btn.danger {
+  color: var(--unity-muted);
+}
+
+.vfx-btn.danger:hover {
+  background: rgba(180, 60, 60, 0.2);
+  border-color: #884444;
+  color: #e07070;
+}
+
+.btn-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.btn-dot.pulse {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+.sep-line {
+  height: 1px;
+  background: var(--unity-sep);
+  margin: 1px -8px;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 0;
+}
+
+.status-indicator {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #444;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.status-indicator.active {
+  background: #4dff9c;
+  box-shadow: 0 0 4px #4dff9c88;
+}
+
+.status-text {
+  font-size: 8.5px;
+  color: var(--unity-muted);
+  letter-spacing: 0.05em;
+}
+
+#click-text-overlay {
+  font-size: 12px;
+  color: var(--unity-text);
+  letter-spacing: 0.05em;
+  position: fixed;
+  z-index: 10;
+  bottom: 14px;
+  left: 50%
+}

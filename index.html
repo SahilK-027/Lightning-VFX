@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lightning VFX Three.js</title>
+  </head>
+
+  <body>
+    <div id="app"></div>
+    <canvas class="webgl"></canvas>
+
+    <div id="flash-overlay"></div>
+
+    <!-- Stats top-left -->
+    <div id="stats">
+      <div class="stat-row">
+        <span class="stat-label">FPS</span>
+        <span class="stat-value" id="fps">--</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Active</span>
+        <span class="stat-value" id="bolt-count">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Strikes</span>
+        <span class="stat-value" id="strike-count">0</span>
+      </div>
+    </div>
+
+    <!-- VFX control panel bottom-right -->
+    <div id="vfx-panel">
+      <div class="panel-header">
+        <span class="panel-header-arrow">▶</span>
+        <span class="panel-header-title">Lightning System</span>
+        <span class="panel-header-badge">VFX</span>
+      </div>
+      <div class="panel-body">
+        <div class="field-row">
+          <span class="field-label">Emit Mode</span>
+          <button class="vfx-btn" id="btn-single" type="button">
+            <span class="btn-dot" aria-hidden="true"></span>Single Burst
+          </button>
+        </div>
+
+        <div class="field-row">
+          <span class="field-label">Auto Storm</span>
+          <button class="vfx-btn accent" id="btn-auto" type="button">
+            <span class="btn-dot" id="auto-dot" aria-hidden="true"></span>Start
+            Loop
+          </button>
+        </div>
+
+        <div class="sep-line"></div>
+
+        <div class="status-row">
+          <div class="status-indicator" id="status-dot"></div>
+          <span class="status-text" id="status-text"
+            >Idle — click scene to strike</span
+          >
+        </div>
+      </div>
+    </div>
+
+    <div id="click-text-overlay">Click to strike lightning</div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import GUI from 'lil-gui';
 import './style.css';
 
@@ -100,6 +101,11 @@ class LightningEffect {
     this.plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
     this._layerColorObjs = params.layers.map((l) => new THREE.Color(l.color));
+
+    // Shared resources for optimization (avoid per-frame allocations)
+    this._debrisSharedGeo = new THREE.PlaneGeometry(1, 1);
+    this._dummy = new THREE.Object3D();
+    this._fadeColor = new THREE.Color();
   }
 
   getStats() {
@@ -114,14 +120,18 @@ class LightningEffect {
     );
   }
 
-  // ───────────────────────── Lightning geometry ────────────────────────────
-  buildBoltGeo(points) {
+  // ───────────────────────── Lightning geometry (optimized) ────────────────
+  buildBoltGeo(points, strikeOffset, thickness, alpha, color) {
     const segs = points.length - 1;
     const vc = segs * 4;
     const pos = new Float32Array(vc * 3);
     const ratios = new Float32Array(vc);
     const dirs = new Float32Array(vc * 3);
     const sides = new Float32Array(vc);
+    const sOff = new Float32Array(vc).fill(strikeOffset);
+    const thick = new Float32Array(vc).fill(thickness);
+    const alph = new Float32Array(vc).fill(alpha);
+    const col = new Float32Array(vc * 3);
     const idx = [];
 
     for (let i = 0; i < segs; i++) {
@@ -148,6 +158,9 @@ class LightningEffect {
         dirs[k + 1] = dir.y;
         dirs[k + 2] = dir.z;
         sides[vi + j] = s;
+        col[k] = color.r;
+        col[k + 1] = color.g;
+        col[k + 2] = color.b;
       });
       idx.push(vi, vi + 1, vi + 2, vi + 1, vi + 3, vi + 2);
     }
@@ -157,6 +170,10 @@ class LightningEffect {
     g.setAttribute('aRatio', new THREE.BufferAttribute(ratios, 1));
     g.setAttribute('aDirection', new THREE.BufferAttribute(dirs, 3));
     g.setAttribute('aSide', new THREE.BufferAttribute(sides, 1));
+    g.setAttribute('aStrikeOffset', new THREE.BufferAttribute(sOff, 1));
+    g.setAttribute('aThickness', new THREE.BufferAttribute(thick, 1));
+    g.setAttribute('aAlpha', new THREE.BufferAttribute(alph, 1));
+    g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
     g.setIndex(idx);
     return g;
   }
@@ -172,44 +189,46 @@ class LightningEffect {
     return [...L.slice(0, -1), ...R];
   }
 
-  // ───────────────────────────── Effects ────────────────────────────────
-  createStrand(points, { strikeOffset, thickMult, alphaMult, scene }) {
-    const geo = this.buildBoltGeo(points);
-    const meshes = [];
-    const mats = [];
-
-    for (let li = 0; li < this.params.layers.length; li++) {
-      const layer = this.params.layers[li];
-      const mat = new THREE.ShaderMaterial({
-        vertexShader: boltVS,
-        fragmentShader: boltFS,
-        uniforms: {
-          uTime: { value: 0 },
-          uStrikeDur: { value: this.params.strikeDur },
-          uFadeDur: { value: this.params.fadeDur },
-          uStrikeOffset: { value: strikeOffset },
-          uColor: { value: new THREE.Color(layer.color) },
-          uThickness: { value: layer.thick * thickMult },
-          uAlpha: { value: layer.alpha * alphaMult },
-          uSpread: { value: this.params.boltSpread },
-        },
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-
-      // Store multipliers for live GUI updates.
-      mat.userData = { type: 'bolt', layerIndex: li, thickMult, alphaMult };
-
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.renderOrder = 2;
-      scene.add(mesh);
-      meshes.push(mesh);
-      mats.push(mat);
+  // ───────────────────────────── Effects (optimized) ────────────────────────
+  createBoltMesh(strandDefs) {
+    // Merge all strands × all layers into a single mesh — 1 draw call
+    const geos = [];
+    for (const { points, strikeOffset, thickMult, alphaMult } of strandDefs) {
+      for (const layer of this.params.layers) {
+        geos.push(
+          this.buildBoltGeo(
+            points,
+            strikeOffset,
+            layer.thick * thickMult,
+            layer.alpha * alphaMult,
+            new THREE.Color(layer.color),
+          ),
+        );
+      }
     }
 
-    return { geo, meshes, mats };
+    const merged = mergeGeometries(geos);
+    geos.forEach((g) => g.dispose());
+
+    const material = new THREE.ShaderMaterial({
+      vertexShader: boltVS,
+      fragmentShader: boltFS,
+      uniforms: {
+        uTime: { value: 0 },
+        uStrikeDur: { value: this.params.strikeDur },
+        uFadeDur: { value: this.params.fadeDur },
+        uSpread: { value: this.params.boltSpread },
+      },
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+
+    const mesh = new THREE.Mesh(merged, material);
+    mesh.renderOrder = 2;
+    this.scene.add(mesh);
+    return { mesh, material, geometry: merged };
   }
 
   createGroundFlash(cx, cz, groundY, scene) {
@@ -241,13 +260,15 @@ class LightningEffect {
     return { mesh, mat };
   }
 
-  buildCrackGeo(points, hw) {
+  buildCrackGeo(points, hw, passAlpha, fadeDurMult) {
     const segs = points.length - 1;
     if (segs < 1) return null;
     const vc = segs * 4;
     const pos = new Float32Array(vc * 3);
     const ratios = new Float32Array(vc);
     const sides = new Float32Array(vc);
+    const alpha = new Float32Array(vc).fill(passAlpha);
+    const fadeMul = new Float32Array(vc).fill(fadeDurMult);
     const idx = [];
 
     for (let i = 0; i < segs; i++) {
@@ -283,6 +304,8 @@ class LightningEffect {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('aRatio', new THREE.BufferAttribute(ratios, 1));
     g.setAttribute('aSide', new THREE.BufferAttribute(sides, 1));
+    g.setAttribute('aAlpha', new THREE.BufferAttribute(alpha, 1));
+    g.setAttribute('aFadeMult', new THREE.BufferAttribute(fadeMul, 1));
     g.setIndex(idx);
     return g;
   }
@@ -332,7 +355,7 @@ class LightningEffect {
 
   spawnCracks(cx, cz, groundY, delay, scene) {
     const p = this.params;
-    const objs = [];
+    const geos = [];
 
     const n =
       p.crackCountMin +
@@ -356,58 +379,48 @@ class LightningEffect {
       );
 
       for (const pts of branches) {
-        // Two crack widths, with distinct alpha/fade multipliers.
-        for (const conf of [
-          {
-            hw: p.crackThinHW,
-            alpha: p.crackThinAlpha,
-            fadeMult: 1.0,
-            kind: 'thin',
-          },
-          {
-            hw: p.crackThickHW,
-            alpha: p.crackThickAlpha,
-            fadeMult: p.crackThickFadeMult,
-            kind: 'thick',
-          },
-        ]) {
-          const geo = this.buildCrackGeo(pts, conf.hw);
-          if (!geo) continue;
+        // Wide glow pass — thinner ribbon, lower alpha, slower fade
+        const gWide = this.buildCrackGeo(pts, p.crackThinHW, p.crackThinAlpha, 1.0);
+        if (gWide) geos.push(gWide);
 
-          const mat = new THREE.ShaderMaterial({
-            vertexShader: crackVS,
-            fragmentShader: crackFS,
-            uniforms: {
-              uTime: { value: 0 },
-              uDelay: { value: delay },
-              uRevealDur: { value: p.crackReveal },
-              uFadeDur: { value: p.crackFade * conf.fadeMult },
-              uAlpha: { value: conf.alpha },
-              uCoreColor: { value: new THREE.Color(p.crackCoreColor) },
-              uMidColor: { value: new THREE.Color(p.crackMidColor) },
-              uEdgeColor: { value: new THREE.Color(p.crackEdgeColor) },
-            },
-            transparent: true,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-            side: THREE.DoubleSide,
-          });
-
-          mat.userData = {
-            type: 'crack',
-            fadeMult: conf.fadeMult,
-            kind: conf.kind,
-          };
-
-          const mesh = new THREE.Mesh(geo, mat);
-          mesh.renderOrder = 1;
-          scene.add(mesh);
-          objs.push({ mesh, mat, geo });
-        }
+        // Narrow core pass — wider ribbon, full alpha, faster fade
+        const gNarrow = this.buildCrackGeo(
+          pts,
+          p.crackThickHW,
+          p.crackThickAlpha,
+          p.crackThickFadeMult,
+        );
+        if (gNarrow) geos.push(gNarrow);
       }
     }
 
-    return objs;
+    if (geos.length === 0) return null;
+
+    const merged = mergeGeometries(geos);
+    geos.forEach((g) => g.dispose());
+
+    const material = new THREE.ShaderMaterial({
+      vertexShader: crackVS,
+      fragmentShader: crackFS,
+      uniforms: {
+        uTime: { value: 0 },
+        uDelay: { value: delay },
+        uRevealDur: { value: p.crackReveal },
+        uFadeDur: { value: p.crackFade },
+        uCoreColor: { value: new THREE.Color(p.crackCoreColor) },
+        uMidColor: { value: new THREE.Color(p.crackMidColor) },
+        uEdgeColor: { value: new THREE.Color(p.crackEdgeColor) },
+      },
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+
+    const mesh = new THREE.Mesh(merged, material);
+    mesh.renderOrder = 1;
+    scene.add(mesh);
+    return { mesh, material, geometry: merged };
   }
 
   spawnSparks(cx, cz, groundY, delay, scene) {
@@ -498,31 +511,42 @@ class LightningEffect {
 
   spawnDebris(cx, cz, groundY, scene) {
     const p = this.params;
-    const shards = [];
     const count =
       p.debrisCountMin +
       Math.floor(Math.random() * (p.debrisCountMax - p.debrisCountMin + 1));
 
+    const material = new THREE.MeshBasicMaterial({
+      vertexColors: true, // instanceColor used as per-instance tint/fade
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+
+    const instanced = new THREE.InstancedMesh(
+      this._debrisSharedGeo,
+      material,
+      count,
+    );
+    instanced.renderOrder = 2;
+    scene.add(instanced);
+
+    const dummy = this._dummy;
+    const shards = [];
+
     for (let i = 0; i < count; i++) {
-      const geo = new THREE.PlaneGeometry(
-        p.debrisWMin + Math.random() * (p.debrisWMax - p.debrisWMin),
-        p.debrisHMin + Math.random() * (p.debrisHMax - p.debrisHMin),
-      );
+      // Random scale encodes shard size variation (unit geo, scaled per instance)
+      const sx = p.debrisWMin + Math.random() * (p.debrisWMax - p.debrisWMin);
+      const sy = p.debrisHMin + Math.random() * (p.debrisHMax - p.debrisHMin);
+
+      dummy.position.set(cx, groundY + p.debrisBaseYOffset, cz);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(sx, sy, 1);
+      dummy.updateMatrix();
+      instanced.setMatrixAt(i, dummy.matrix);
 
       const color = this.pickDebrisColor();
-      const mat = new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(cx, groundY + p.debrisBaseYOffset, cz);
-      mesh.renderOrder = 2;
-      scene.add(mesh);
+      instanced.setColorAt(i, color);
 
       const a = Math.random() * Math.PI * 2;
       const spd =
@@ -532,20 +556,19 @@ class LightningEffect {
         p.debrisVelocityUpMin +
         Math.random() * (p.debrisVelocityUpMax - p.debrisVelocityUpMin);
 
-      const ry = (Math.random() - 0.5) * p.debrisRotationScale;
-      const rx = (Math.random() - 0.5) * p.debrisRotationScale;
-      const rz = (Math.random() - 0.5) * p.debrisRotationScale;
-
       shards.push({
-        mesh,
-        mat,
-        geo,
+        index: i,
+        baseScaleX: sx,
+        baseScaleY: sy,
+        baseColor: color.clone(),
+        pos: new THREE.Vector3(cx, groundY + p.debrisBaseYOffset, cz),
+        rotEuler: new THREE.Euler(),
         vx: Math.cos(a) * spd,
         vy: up,
         vz: Math.sin(a) * spd,
-        rx,
-        ry,
-        rz,
+        rx: (Math.random() - 0.5) * p.debrisRotationScale,
+        ry: (Math.random() - 0.5) * p.debrisRotationScale,
+        rz: (Math.random() - 0.5) * p.debrisRotationScale,
         lifetime:
           p.debrisLifetimeMin +
           Math.random() * (p.debrisLifetimeMax - p.debrisLifetimeMin),
@@ -555,7 +578,10 @@ class LightningEffect {
       });
     }
 
-    return shards;
+    instanced.instanceMatrix.needsUpdate = true;
+    instanced.instanceColor.needsUpdate = true;
+
+    return { instanced, material, shards };
   }
 
   pickDebrisColor() {
@@ -585,7 +611,7 @@ class LightningEffect {
     return 0;
   }
 
-  // ───────────────────────────── Spawning ────────────────────────────────
+  // ───────────────────────────── Spawning (optimized) ────────────────────────
   spawnAt(cx, cz, nowSec) {
     const p = this.params;
     const groundY = this.getGroundY(cx, cz);
@@ -608,13 +634,14 @@ class LightningEffect {
       roughness,
     );
 
-    const strands = [
-      this.createStrand(mainPoints, {
+    // Collect all strand definitions — merged into 1 mesh below
+    const strandDefs = [
+      {
+        points: mainPoints,
         strikeOffset: 0,
         thickMult: p.mainStrandThickMult,
         alphaMult: p.mainStrandAlphaMult,
-        scene: this.scene,
-      }),
+      },
     ];
 
     const bc =
@@ -653,30 +680,30 @@ class LightningEffect {
         roughness * p.altRoughnessMult,
       );
 
-      strands.push(
-        this.createStrand(altPoints, {
-          strikeOffset: ff,
-          thickMult: p.altStrandThickMult,
-          alphaMult: p.altStrandAlphaMult,
-          scene: this.scene,
-        }),
-      );
+      strandDefs.push({
+        points: altPoints,
+        strikeOffset: ff,
+        thickMult: p.altStrandThickMult,
+        alphaMult: p.altStrandAlphaMult,
+      });
     }
 
-    const flash = this.createGroundFlash(cx, cz, groundY, this.scene);
-    const cracks = this.spawnCracks(cx, cz, groundY, p.strikeDur, this.scene);
-    const sparks = this.spawnSparks(cx, cz, groundY, p.strikeDur, this.scene);
-    const debris = this.spawnDebris(cx, cz, groundY, this.scene);
+    // ── Spawn all VFX (optimized to ~7 draw calls total) ──────────────────
+    const boltMesh = this.createBoltMesh(strandDefs); // 1 draw call
+    const flash = this.createGroundFlash(cx, cz, groundY, this.scene); // 1
+    const cracks = this.spawnCracks(cx, cz, groundY, p.strikeDur, this.scene); // 1
+    const sparks = this.spawnSparks(cx, cz, groundY, p.strikeDur, this.scene); // 1
+    const debris = this.spawnDebris(cx, cz, groundY, this.scene); // 1
     const shockwave = this.spawnShockwave(
       cx,
       cz,
       groundY,
       p.strikeDur,
       this.scene,
-    );
+    ); // 1
 
     this.activeBolts.push({
-      strands,
+      boltMesh,
       flash,
       cracks,
       sparks,
@@ -685,7 +712,6 @@ class LightningEffect {
       startTime: nowSec,
       debrisStarted: false,
       shakeTriggered: false,
-      // Store strike position in case we want in future.
       strikePos: { x: cx, z: cz, groundY },
     });
 
@@ -693,13 +719,16 @@ class LightningEffect {
     this.ui.triggerFlash(nowSec);
   }
 
-  // ───────────────────────────── Update ────────────────────────────────
+  // ───────────────────────────── Update (optimized) ──────────────────────────
   update(dt, nowSec) {
     const p = this.params;
     const maxD = Math.max(
       p.strikeDur + p.fadeDur + p.tailExtra,
       p.strikeDur + p.crackReveal + p.crackFade + p.impactExtra,
     );
+
+    const dummy = this._dummy;
+    const fadeColor = this._fadeColor;
 
     for (let i = this.activeBolts.length - 1; i >= 0; i--) {
       const bolt = this.activeBolts[i];
@@ -710,22 +739,11 @@ class LightningEffect {
         this.ui.shakeCamera(p.shakeOnStrike);
       }
 
-      // Update all bolt-related uniforms
-      for (const s of bolt.strands) {
-        for (const m of s.mats) {
-          m.uniforms.uTime.value = elapsed;
-          // Allow live GUI changes:
-          m.uniforms.uStrikeDur.value = p.strikeDur;
-          m.uniforms.uFadeDur.value = p.fadeDur;
-          m.uniforms.uSpread.value = p.boltSpread;
-
-          const layerIndex = m.userData.layerIndex;
-          const layer = p.layers[layerIndex];
-          m.uniforms.uColor.value.set(layer.color);
-          m.uniforms.uThickness.value = layer.thick * m.userData.thickMult;
-          m.uniforms.uAlpha.value = layer.alpha * m.userData.alphaMult;
-        }
-      }
+      // ── Uniform updates (6 writes, not 50+) ───────────────────────────
+      bolt.boltMesh.material.uniforms.uTime.value = elapsed;
+      bolt.boltMesh.material.uniforms.uStrikeDur.value = p.strikeDur;
+      bolt.boltMesh.material.uniforms.uFadeDur.value = p.fadeDur;
+      bolt.boltMesh.material.uniforms.uSpread.value = p.boltSpread;
 
       bolt.flash.mat.uniforms.uTime.value = elapsed - p.strikeDur;
       bolt.flash.mat.uniforms.uDur.value = p.groundFlashDur;
@@ -734,20 +752,13 @@ class LightningEffect {
       bolt.flash.mat.uniforms.uFadePow.value = p.groundFlashFadePow;
       bolt.flash.mat.uniforms.uColor.value.set(p.groundFlashColor);
 
-      for (const c of bolt.cracks) {
-        c.mat.uniforms.uTime.value = elapsed;
-        c.mat.uniforms.uRevealDur.value = p.crackReveal;
-        c.mat.uniforms.uFadeDur.value = p.crackFade * c.mat.userData.fadeMult;
-        // uAlpha is per crack width; keep it tied to config for live tweaks.
-        if (c.mat.userData.kind === 'thin') {
-          c.mat.uniforms.uAlpha.value = p.crackThinAlpha;
-        } else if (c.mat.userData.kind === 'thick') {
-          c.mat.uniforms.uAlpha.value = p.crackThickAlpha;
-        }
-        // Update crack colors for live GUI changes
-        c.mat.uniforms.uCoreColor.value.set(p.crackCoreColor);
-        c.mat.uniforms.uMidColor.value.set(p.crackMidColor);
-        c.mat.uniforms.uEdgeColor.value.set(p.crackEdgeColor);
+      if (bolt.cracks) {
+        bolt.cracks.material.uniforms.uTime.value = elapsed;
+        bolt.cracks.material.uniforms.uRevealDur.value = p.crackReveal;
+        bolt.cracks.material.uniforms.uFadeDur.value = p.crackFade;
+        bolt.cracks.material.uniforms.uCoreColor.value.set(p.crackCoreColor);
+        bolt.cracks.material.uniforms.uMidColor.value.set(p.crackMidColor);
+        bolt.cracks.material.uniforms.uEdgeColor.value.set(p.crackEdgeColor);
       }
 
       bolt.sparks.mat.uniforms.uTime.value = elapsed;
@@ -761,58 +772,78 @@ class LightningEffect {
       bolt.shockwave.mat.uniforms.uColorA.value.set(p.shockwaveColorA);
       bolt.shockwave.mat.uniforms.uColorB.value.set(p.shockwaveColorB);
 
-      // Debris starts after the main strike
+      // ── Debris physics (CPU, InstancedMesh) ───────────────────────────
       if (elapsed >= p.strikeDur && !bolt.debrisStarted) {
         bolt.debrisStarted = true;
-        for (const s of bolt.debris) s.active = true;
+        for (const s of bolt.debris.shards) s.active = true;
       }
 
       if (bolt.debrisStarted) {
-        for (const s of bolt.debris) {
+        let matrixDirty = false;
+        let colorDirty = false;
+
+        for (const s of bolt.debris.shards) {
           if (!s.active) continue;
           s.t += dt;
-          if (s.t > s.lifetime) {
-            this.scene.remove(s.mesh);
-            s.mat.dispose();
-            s.geo.dispose();
+
+          if (s.t >= s.lifetime) {
+            // Hide expired shard by zeroing scale
             s.active = false;
+            dummy.position.copy(s.pos);
+            dummy.rotation.copy(s.rotEuler);
+            dummy.scale.set(0, 0, 0);
+            dummy.updateMatrix();
+            bolt.debris.instanced.setMatrixAt(s.index, dummy.matrix);
+            matrixDirty = true;
             continue;
           }
-          s.mesh.position.x += s.vx * dt;
-          s.mesh.position.z += s.vz * dt;
-          s.vy -= p.debrisGravity * dt;
-          s.mesh.position.y = Math.max(
-            s.groundY + 0.05,
-            s.mesh.position.y + s.vy * dt,
-          );
-          s.mesh.rotation.x += s.rx * dt;
-          s.mesh.rotation.y += s.ry * dt;
-          s.mesh.rotation.z += s.rz * dt;
 
+          // Physics integration
+          s.pos.x += s.vx * dt;
+          s.pos.z += s.vz * dt;
+          s.vy -= p.debrisGravity * dt;
+          s.pos.y = Math.max(s.groundY + 0.05, s.pos.y + s.vy * dt);
+
+          s.rotEuler.x += s.rx * dt;
+          s.rotEuler.y += s.ry * dt;
+          s.rotEuler.z += s.rz * dt;
+
+          dummy.position.copy(s.pos);
+          dummy.rotation.copy(s.rotEuler);
+          dummy.scale.set(s.baseScaleX, s.baseScaleY, 1);
+          dummy.updateMatrix();
+          bolt.debris.instanced.setMatrixAt(s.index, dummy.matrix);
+          matrixDirty = true;
+
+          // Encode fade in instanceColor (additive blend → color scale = opacity)
           const life = s.t / s.lifetime;
           const fade = Math.max(
             0,
             (1 - Math.pow(life, p.debrisFadePower)) * p.debrisFadeMult,
           );
-          s.mat.opacity = fade;
+          fadeColor.copy(s.baseColor).multiplyScalar(fade);
+          bolt.debris.instanced.setColorAt(s.index, fadeColor);
+          colorDirty = true;
         }
+
+        if (matrixDirty)
+          bolt.debris.instanced.instanceMatrix.needsUpdate = true;
+        if (colorDirty) bolt.debris.instanced.instanceColor.needsUpdate = true;
       }
 
       if (elapsed > maxD) {
         // Cleanup GPU resources
-        for (const s of bolt.strands) {
-          for (const m of s.meshes) this.scene.remove(m);
-          for (const m of s.mats) m.dispose();
-          s.geo.dispose();
-        }
+        this.scene.remove(bolt.boltMesh.mesh);
+        bolt.boltMesh.material.dispose();
+        bolt.boltMesh.geometry.dispose();
 
         this.scene.remove(bolt.flash.mesh);
         bolt.flash.mat.dispose();
 
-        for (const c of bolt.cracks) {
-          this.scene.remove(c.mesh);
-          c.mat.dispose();
-          c.geo.dispose();
+        if (bolt.cracks) {
+          this.scene.remove(bolt.cracks.mesh);
+          bolt.cracks.material.dispose();
+          bolt.cracks.geometry.dispose();
         }
 
         if (bolt.sparks) {
@@ -826,12 +857,9 @@ class LightningEffect {
           bolt.shockwave.mat.dispose();
         }
 
-        for (const s of bolt.debris) {
-          if (!s.active) continue;
-          this.scene.remove(s.mesh);
-          s.mat.dispose();
-          s.geo.dispose();
-        }
+        this.scene.remove(bolt.debris.instanced);
+        bolt.debris.material.dispose();
+        // NOTE: _debrisSharedGeo is shared — disposed only in clear()
 
         this.activeBolts.splice(i, 1);
       }
@@ -840,35 +868,37 @@ class LightningEffect {
 
   clear() {
     for (const bolt of this.activeBolts) {
-      for (const s of bolt.strands) {
-        for (const m of s.meshes) this.scene.remove(m);
-        for (const m of s.mats) m.dispose();
-        s.geo.dispose();
-      }
+      this.scene.remove(bolt.boltMesh.mesh);
+      bolt.boltMesh.material.dispose();
+      bolt.boltMesh.geometry.dispose();
+
       this.scene.remove(bolt.flash.mesh);
       bolt.flash.mat.dispose();
-      for (const c of bolt.cracks) {
-        this.scene.remove(c.mesh);
-        c.mat.dispose();
-        c.geo.dispose();
+
+      if (bolt.cracks) {
+        this.scene.remove(bolt.cracks.mesh);
+        bolt.cracks.material.dispose();
+        bolt.cracks.geometry.dispose();
       }
+
       if (bolt.sparks) {
         this.scene.remove(bolt.sparks.mesh);
         bolt.sparks.mat.dispose();
         bolt.sparks.geo.dispose();
       }
+
       if (bolt.shockwave) {
         this.scene.remove(bolt.shockwave.mesh);
         bolt.shockwave.mat.dispose();
       }
-      for (const s of bolt.debris) {
-        this.scene.remove(s.mesh);
-        s.mat.dispose();
-        s.geo.dispose();
-      }
+
+      this.scene.remove(bolt.debris.instanced);
+      bolt.debris.material.dispose();
     }
     this.activeBolts.length = 0;
-    this.strikeCount = 0;
+
+    // Dispose shared geometry
+    this._debrisSharedGeo.dispose();
   }
 }
 
@@ -1686,7 +1716,7 @@ class LightningApp {
       hemiIntensity: 0.35,
 
       // Camera / shake
-      cameraOrbitSpeed: 0.04,
+      cameraOrbitSpeed: 0,
       cameraRadius: 28,
       cameraHeight: 11,
       shakeOnStrike: 1.2,
